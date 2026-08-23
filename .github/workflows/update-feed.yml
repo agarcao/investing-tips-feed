@@ -1,0 +1,67 @@
+name: Update WhatsApp feed
+
+on:
+  workflow_dispatch:
+
+  schedule:
+    # Duas vezes por hora, evitando os minutos mais congestionados
+    - cron: "17,47 * * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  update-feed:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch latest messages
+        run: |
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            "https://investidores-liberais-feed.andre-fdgarcao.workers.dev/?hours=48" \
+            --output messages.json
+
+      - name: Validate JSON
+        run: |
+          python - <<'PY'
+          import json
+
+          with open("messages.json", "r", encoding="utf-8") as f:
+              data = json.load(f)
+
+          if data.get("ok") is not True:
+              raise SystemExit(
+                  f"Feed returned an error: {data}"
+              )
+
+          if "messages" not in data:
+              raise SystemExit(
+                  "Feed does not contain a messages field"
+              )
+
+          print(
+              f"Feed valid: {len(data['messages'])} messages"
+          )
+          PY
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add messages.json
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Update WhatsApp feed"
+          git push
