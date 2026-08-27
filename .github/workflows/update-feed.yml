@@ -28,27 +28,66 @@ jobs:
             "https://investidores-liberais-feed.andre-fdgarcao.workers.dev/?hours=48" \
             --output messages.json
 
-      - name: Validate JSON
+      - name: Validate and build rolling feeds
         run: |
           python - <<'PY'
           import json
+          from datetime import datetime, timedelta, timezone
+
+          def parse_timestamp(value):
+              if not isinstance(value, str) or not value:
+                  raise ValueError(f"Invalid timestamp: {value!r}")
+              return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
           with open("messages.json", "r", encoding="utf-8") as f:
               data = json.load(f)
 
           if data.get("ok") is not True:
-              raise SystemExit(
-                  f"Feed returned an error: {data}"
-              )
+              raise SystemExit(f"Feed returned an error: {data}")
 
-          if "messages" not in data:
-              raise SystemExit(
-                  "Feed does not contain a messages field"
-              )
+          messages = data.get("messages")
+          if not isinstance(messages, list):
+              raise SystemExit("Feed does not contain a valid messages list")
 
-          print(
-              f"Feed valid: {len(data['messages'])} messages"
-          )
+          # Fail the workflow rather than publish incomplete derivative feeds
+          # if any source message has an invalid timestamp.
+          parsed = [(parse_timestamp(m.get("timestamp")), m) for m in messages]
+          now = datetime.now(timezone.utc)
+
+          def write_window(filename, newest_age_hours, oldest_age_hours):
+              newest_cutoff = now - timedelta(hours=newest_age_hours)
+              oldest_cutoff = now - timedelta(hours=oldest_age_hours)
+
+              selected = [
+                  (ts, message)
+                  for ts, message in parsed
+                  if oldest_cutoff <= ts < newest_cutoff
+              ]
+              selected.sort(key=lambda item: item[0], reverse=True)
+
+              output = {
+                  "ok": True,
+                  "window": {
+                      "newest_age_hours": newest_age_hours,
+                      "oldest_age_hours": oldest_age_hours,
+                  },
+                  "generated_at": now.isoformat().replace("+00:00", "Z"),
+                  "count": len(selected),
+                  "messages": [message for _, message in selected],
+              }
+
+              with open(filename, "w", encoding="utf-8") as f:
+                  json.dump(output, f, ensure_ascii=False, separators=(",", ":"))
+
+              print(f"{filename}: {len(selected)} messages")
+
+          # Stable small files for ChatGPT automations. 26 hours total gives
+          # the daily radar a 2-hour overlap while keeping each read compact.
+          write_window("messages_recent.json", 0, 8)
+          write_window("messages_08_16h.json", 8, 16)
+          write_window("messages_16_26h.json", 16, 26)
+
+          print(f"Source feed valid: {len(messages)} messages")
           PY
 
       - name: Commit changes
@@ -56,7 +95,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add messages.json
+          git add \
+            messages.json \
+            messages_recent.json \
+            messages_08_16h.json \
+            messages_16_26h.json
 
           if git diff --cached --quiet; then
             echo "No changes to commit."
