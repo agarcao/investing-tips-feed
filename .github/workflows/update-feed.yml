@@ -3,8 +3,13 @@ name: Update WhatsApp feed
 on:
   workflow_dispatch:
 
+  # Primary reliable trigger: a small heartbeat file is updated by ChatGPT.
+  push:
+    paths:
+      - "refresh-trigger.txt"
+
+  # Keep GitHub cron as a best-effort backup only.
   schedule:
-    # Duas vezes por hora, evitando os minutos mais congestionados
     - cron: "17,47 * * * *"
 
 permissions:
@@ -49,8 +54,6 @@ jobs:
           if not isinstance(messages, list):
               raise SystemExit("Feed does not contain a valid messages list")
 
-          # Fail the workflow rather than publish incomplete derivative feeds
-          # if any source message has an invalid timestamp.
           parsed = [(parse_timestamp(m.get("timestamp")), m) for m in messages]
           now = datetime.now(timezone.utc)
 
@@ -81,8 +84,6 @@ jobs:
 
               print(f"{filename}: {len(selected)} messages")
 
-          # Stable small files for ChatGPT automations. 26 hours total gives
-          # the daily radar a 2-hour overlap while keeping each read compact.
           write_window("messages_recent.json", 0, 8)
           write_window("messages_08_16h.json", 8, 16)
           write_window("messages_16_26h.json", 16, 26)
@@ -102,7 +103,7 @@ jobs:
             messages_16_26h.json
 
           if git diff --cached --quiet; then
-            echo "No changes to commit."
+            echo "No feed changes to commit."
             exit 0
           fi
 
